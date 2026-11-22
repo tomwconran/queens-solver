@@ -135,6 +135,20 @@ class Puzzle {
         return out;
     }
 
+    std::ostream& print(std::ostream& out, const State& state) const {
+        for (int r{0}; r < m_size; ++r) {
+            for (int c{0}; c < m_size; ++c) {
+                if ((state.mask[r] >> c) & 1)
+                    std::cout << (((state.queens[r] >> c) & 1) ? 'Q' : '.');
+                else
+                    out << static_cast<char>(m_region[r][c] + 'A');
+            }
+            out << '\n';
+        }
+
+        return out;
+    }
+
     int size() const { return m_size; }
     auto& colourMask(int colour) const { return m_colourMasks[colour]; }
     State_t rowMask() const { return m_rowMask; }
@@ -295,9 +309,84 @@ class DeductionSolver {
         return found;
     }
 
+    static bool blockkRegion(const Context& context, State& state, State_t rows,
+                             State_t group) {
+        bool found{false};
+        while (rows) {
+            int r{std::countr_zero(rows)};
+            rows &= rows - 1;
+            State_t colours{group};
+            State_t colourCells{};
+            while (colours) {
+                int colour{std::countr_zero(colours)};
+                colours &= colours - 1;
+                colourCells |= context.puzzle.colourMask(colour)[r];
+            }
+            State_t crossMask{~colourCells & ~state.mask[r] &
+                              context.puzzle.rowMask()};
+            if (crossMask) {
+                found = true;
+                context.puzzle.crossRow(state, r, crossMask);
+            }
+        }
+        return found;
+    }
+
+    static bool searchkRegions(const Context& context, State& state,
+                               const auto& colourRows, const int k, int next,
+                               int count, State_t rows, State_t group) {
+        if (std::popcount(rows) > k) return false;
+        if (count == k) {
+            if (std::popcount(rows) == k) {
+                return blockkRegion(context, state, rows, group);
+            }
+            return false;
+        }
+        for (int c{next}; c <= context.puzzle.size() - k + count; ++c) {
+            if (!colourRows[c]) continue;
+            if (std::popcount(colourRows[c]) > k) continue;
+            if (searchkRegions(context, state, colourRows, k, c + 1, count + 1,
+                               rows | colourRows[c],
+                               group | Puzzle::column(c))) {
+                return true;
+            };
+        }
+        return false;
+    }
+
+    static bool kRegionsInkRows(const Context& context, State& state) {
+        std::array<State_t, maxSize> colourRows{};
+        for (int colour{0}; colour < context.puzzle.size(); ++colour) {
+            if (state.queenColours & Puzzle::column(colour)) continue;
+            const auto& colourMask{context.puzzle.colourMask(colour)};
+            for (int r{0}; r < context.puzzle.size(); ++r) {
+                if (colourMask[r] & ~state.mask[r])
+                    colourRows[colour] |= Puzzle::column(r);
+            }
+        }
+
+        for (int k{2};
+             k <= context.puzzle.size() - std::popcount(state.queenColours) - 1;
+             ++k) {
+            if (searchkRegions(context, state, colourRows, k, 0, 0, State_t{},
+                               State_t{}))
+                return true;
+        }
+
+        return false;
+    }
+
+    static bool kRegionsInkColumns(const Context& context, State& state) {
+        bool found{kRegionsInkRows(Context{context.transposed, context.puzzle},
+                                   Puzzle::transposeState(state))};
+        Puzzle::transposeState(state);
+        return found;
+    }
+
     static constexpr std::array rules{
-        &singleSquare, &singleRow,   &singleColumn,  &blocksRow,
-        &blocksColumn, &regionInRow, &regionInColumn};
+        &singleSquare,   &singleRow,       &singleColumn,
+        &blocksRow,      &blocksColumn,    &regionInRow,
+        &regionInColumn, &kRegionsInkRows, &kRegionsInkColumns};
 
     std::optional<State> deduce(const Context& context, State state) {
         bool progress{true};
@@ -314,6 +403,7 @@ class DeductionSolver {
         if (std::popcount(state.queenColours) == context.puzzle.size())
             return state;
         std::cout << "DEDUCTION FAILED USING BACKTRACKING\n";
+        context.puzzle.print(std::cout, state);
         BacktrackSolver bs{};
         return bs.solve(context.puzzle, state);
     }
@@ -323,7 +413,8 @@ class DeductionSolver {
 
     std::optional<State> solve(const Puzzle& puzzle, State s = State{}) {
         m_passes = 0;
-        const Context c{puzzle, Puzzle{puzzle.transpose()}};
+        const Puzzle t{puzzle.transpose()};
+        const Context c{puzzle, t};
         return deduce(c, s);
     }
     int calls() const { return m_passes; }
