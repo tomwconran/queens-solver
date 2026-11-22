@@ -8,15 +8,16 @@
 #include <istream>
 #include <optional>
 #include <ostream>
+#include <string_view>
 
 #include "timer.h"
 
 using State_t = std::uint32_t;
 
 struct RGB {
-    const int r{};
-    const int g{};
-    const int b{};
+    int r{};
+    int g{};
+    int b{};
     std::ostream& backgroundColour(std::ostream& out) const {
         return out << "\x1b[48;2;" << r << ";" << g << ";" << b << "m";
     }
@@ -171,7 +172,7 @@ class Puzzle {
         for (int r{0}; r < m_size; ++r) {
             for (int c{0}; c < m_size; ++c) {
                 palette[m_region[r][c]].backgroundColour(out);
-                out << static_cast<char>(m_region[r][c] + 'A');
+                out << static_cast<char>(m_region[r][c] + 'A') << ' ';
             }
             out << "\x1b[49m\n";
         }
@@ -185,9 +186,9 @@ class Puzzle {
             for (int c{0}; c < m_size; ++c) {
                 palette[m_region[r][c]].backgroundColour(out);
                 if ((state.mask[r] >> c) & 1)
-                    out << (((state.queens[r] >> c) & 1) ? "♛" : " ");
+                    out << (((state.queens[r] >> c) & 1) ? "♛ " : "  ");
                 else
-                    out << static_cast<char>(m_region[r][c] + 'A');
+                    out << static_cast<char>(m_region[r][c] + 'A') << ' ';
             }
             out << "\x1b[49m\n";
         }
@@ -248,34 +249,6 @@ struct Context {
     const Puzzle& transposed;
 };
 
-class BacktrackSolver {
-   private:
-    int m_calls{};
-
-    std::optional<State> backtrack(const Puzzle& puzzle, State state, int r) {
-        ++m_calls;
-        if (puzzle.size() == r) return state;
-        if (state.queens[r]) return backtrack(puzzle, state, r + 1);
-        for (int c{0}; c < puzzle.size(); ++c) {
-            if (!puzzle.canPlace(state, r, c)) continue;
-            State nextState{state};
-            std::optional<State> result{
-                backtrack(puzzle, puzzle.place(nextState, r, c), r + 1)};
-            if (result) return result;
-        }
-        return std::nullopt;
-    }
-
-   public:
-    BacktrackSolver() = default;
-
-    std::optional<State> solve(const Puzzle& puzzle, State s = State{}) {
-        m_calls = 0;
-        return backtrack(puzzle, s, 0);
-    }
-    int calls() const { return m_calls; }
-};
-
 class DeductionSolver {
    public:
     enum class Status {
@@ -285,8 +258,6 @@ class DeductionSolver {
     };
 
    private:
-    int m_passes{};
-
     static bool singleSquare(const Context& context, State& state) {
         bool found{false};
         for (int colour{0}; colour < context.puzzle.size(); ++colour) {
@@ -511,14 +482,27 @@ class DeductionSolver {
         &singleSquare,       &singleRow,     &singleColumn,   &blocksRow,
         &blocksColumn,       &regionInRow,   &regionInColumn, &kRegionsInkRows,
         &kRegionsInkColumns, &blockedSquares};
+    static constexpr std::array<std::string_view, rules.size()> ruleNames{
+        "singleSquare",   "singleRow",       "singleColumn",
+        "blocksRow",      "blocksColumn",    "regionInRow",
+        "regionInColumn", "kRegionsInkRows", "kRegionsInkColumns",
+        "blockedSquares"};
 
-    Status deduce(const Context& context, State& state) {
+   public:
+    struct Stats {
+        int branches{};
+        int passes{};
+        std::array<int, rules.size()> ruleCounts{};
+    };
+
+    static Status deduce(const Context& context, State& state, Stats& stats) {
         bool progress{true};
         while (progress) {
+            ++stats.passes;
             progress = false;
-            ++m_passes;
             for (std::size_t i{0}; i < rules.size(); ++i) {
                 if (rules[i](context, state)) {
+                    ++stats.ruleCounts[i];
                     progress = true;
                     break;
                 }
@@ -531,31 +515,59 @@ class DeductionSolver {
         return Status::stuck;
     }
 
-   public:
-    DeductionSolver() = default;
-
-    Status solve(const Context& context, State& s) {
-        return deduce(context, s);
+    static void printStats(std::ostream& out, const Stats& stats) {
+        out << "Branches: " << stats.branches << " Passes: " << stats.passes;
+        for (std::size_t i{0}; i < rules.size(); ++i) {
+            if (!(i % 4)) out << "\n";
+            out << ruleNames[i] << ": " << stats.ruleCounts[i] << ' ';
+        }
+        out << '\n';
     }
-    int calls() const { return m_passes; }
+};
+
+class BacktrackSolver {
+   private:
+    DeductionSolver::Stats m_stats{};
+
+    std::optional<State> backtrack(const Puzzle& puzzle, State state, int r) {
+        if (puzzle.size() == r) return state;
+        if (state.queens[r]) return backtrack(puzzle, state, r + 1);
+        for (int c{0}; c < puzzle.size(); ++c) {
+            if (!puzzle.canPlace(state, r, c)) continue;
+            ++m_stats.branches;
+            State nextState{state};
+            std::optional<State> result{
+                backtrack(puzzle, puzzle.place(nextState, r, c), r + 1)};
+            if (result) return result;
+        }
+        return std::nullopt;
+    }
+
+   public:
+    BacktrackSolver() = default;
+
+    std::optional<State> solve(const Puzzle& puzzle, State s = State{}) {
+        m_stats = {};
+        return backtrack(puzzle, s, 0);
+    }
+    const DeductionSolver::Stats& stats() const { return m_stats; }
 };
 
 class HybridSolver {
    private:
-    int m_calls{};
-    DeductionSolver ds{};
+    DeductionSolver::Stats m_stats{};
 
     std::optional<State> backtrack(const Context& context, State state, int r) {
-        ++m_calls;
         if (context.puzzle.size() == r) return state;
         if (!context.puzzle.isConsistent(state)) return std::nullopt;
         if (state.queens[r]) return backtrack(context, state, r + 1);
-        auto status{ds.solve(context, state)};
+        auto status{DeductionSolver::deduce(context, state, m_stats)};
         using enum DeductionSolver::Status;
         if (status == solved) return state;
         if (status == contradiction) return std::nullopt;
         for (int c{0}; c < context.puzzle.size(); ++c) {
             if (!context.puzzle.canPlace(state, r, c)) continue;
+            ++m_stats.branches;
             State nextState{state};
             std::optional<State> result{backtrack(
                 context, context.puzzle.place(nextState, r, c), r + 1)};
@@ -568,15 +580,16 @@ class HybridSolver {
     HybridSolver() = default;
 
     std::optional<State> solve(const Puzzle& puzzle, State s = State{}) {
+        m_stats = {};
         const Puzzle t{puzzle.transpose()};
         const Context c{puzzle, t};
         return backtrack(c, s, 0);
     }
-    int calls() const { return m_calls + ds.calls(); }
+    const DeductionSolver::Stats& stats() const { return m_stats; }
 };
 
 struct Tester {
-    void testPuzzle(std::istream& file, HybridSolver& solver) {
+    void testPuzzle(std::istream& file, auto& solver) {
         Puzzle p{file};
         Timer t{};
         std::optional<State> result = solver.solve(p);
@@ -584,16 +597,33 @@ struct Tester {
         if (result) p.print(std::cout, result.value());
         std::cout << "Correct: " << std::boolalpha
                   << (result ? p.isSolution(result.value()) : false)
-                  << " Calls: " << solver.calls() << " Time: " << time << '\n';
+                  << " Time: " << time << '\n';
+        DeductionSolver::printStats(std::cout, solver.stats());
     }
 };
 
 int main(int argc, char const* argv[]) {
-    assert(argc > 1 && "NO TEST FILE GIVEN");
+    if (argc <= 1) {
+        std::cerr << "No test file given" << '\n';
+        return 1;
+    }
     std::ifstream file{argv[1]};
-    assert(file && "NO SUCH FILE EXISTS");
-    HybridSolver hs{};
+    if (!file) {
+        std::cerr << "File " << argv[1] << " does not exist" << '\n';
+        return 1;
+    }
+    std::string_view solver{argc > 2 ? argv[2] : "hybrid"};
     Tester t{};
-    t.testPuzzle(file, hs);
+    if (solver == "hybrid") {
+        HybridSolver hs{};
+        t.testPuzzle(file, hs);
+    } else if (solver == "backtrack") {
+        BacktrackSolver bs{};
+        t.testPuzzle(file, bs);
+    } else {
+        std::cerr << "Invalid solver" << '\n';
+        return 1;
+    }
+
     return 0;
 }
