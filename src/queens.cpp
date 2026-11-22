@@ -7,12 +7,54 @@
 #include <iostream>
 #include <istream>
 #include <optional>
+#include <ostream>
 
 #include "timer.h"
 
 using State_t = std::uint32_t;
 
+struct RGB {
+    const int r{};
+    const int g{};
+    const int b{};
+    std::ostream& backgroundColour(std::ostream& out) const {
+        return out << "\x1b[48;2;" << r << ";" << g << ";" << b << "m";
+    }
+    std::ostream& textColour(std::ostream& out) const {
+        return out << "\x1b[38;2;" << r << ";" << g << ";" << b << "m";
+    }
+};
+
 inline constexpr int maxSize{26};
+inline constexpr std::array<RGB, maxSize> palette{{
+    {224, 224, 224},  // A  light grey
+    {184, 178, 160},  // B  stone
+    {183, 164, 222},  // C  lavender
+    {158, 189, 250},  // D  light blue
+    {247, 203, 154},  // E  peach
+    {188, 222, 166},  // F  light green
+    {238, 130, 104},  // G  coral
+    {232, 243, 149},  // H  pale yellow
+    {211, 161, 190},  // I  mauve
+    {139, 231, 225},  // J  aqua
+    {164, 201, 205},  // K  slate teal
+    {230, 204, 147},  // L  wheat
+    {212, 223, 171},  // M  sage
+    {204, 164, 124},  // N  tan brown
+    {255, 160, 200},  // O  rose
+    {150, 200, 120},  // P  olive green
+    {255, 230, 100},  // Q  gold
+    {170, 150, 255},  // R  violet
+    {120, 200, 170},  // S  sea green
+    {255, 140, 60},   // T  orange
+    {200, 200, 90},   // U  mustard
+    {150, 180, 220},  // V  steel blue
+    {255, 200, 230},  // W  pink
+    {170, 120, 90},   // X  brown
+    {130, 210, 255},  // Y  sky blue
+    {220, 170, 255},  // Z  lilac
+}};
+inline constexpr RGB black{0, 0, 0};
 
 struct State {
     std::array<State_t, maxSize> queens{};
@@ -125,28 +167,70 @@ class Puzzle {
     }
 
     std::ostream& print(std::ostream& out) const {
+        black.textColour(out);
         for (int r{0}; r < m_size; ++r) {
             for (int c{0}; c < m_size; ++c) {
+                palette[m_region[r][c]].backgroundColour(out);
                 out << static_cast<char>(m_region[r][c] + 'A');
             }
-            out << '\n';
+            out << "\x1b[49m\n";
         }
-
+        out << "\x1b[39m";
         return out;
     }
 
     std::ostream& print(std::ostream& out, const State& state) const {
+        black.textColour(out);
         for (int r{0}; r < m_size; ++r) {
             for (int c{0}; c < m_size; ++c) {
+                palette[m_region[r][c]].backgroundColour(out);
                 if ((state.mask[r] >> c) & 1)
-                    out << (((state.queens[r] >> c) & 1) ? 'Q' : '.');
+                    out << (((state.queens[r] >> c) & 1) ? "♛" : " ");
                 else
                     out << static_cast<char>(m_region[r][c] + 'A');
             }
-            out << '\n';
+            out << "\x1b[49m\n";
+        }
+        out << "\x1b[39m";
+        return out;
+    }
+
+    bool isConsistent(const State& state) const {
+        for (int colour{0}; colour < m_size; ++colour) {
+            if (state.queenColours & Puzzle::column(colour)) continue;
+            bool openCell{false};
+            for (int r{0}; r < m_size; ++r) {
+                if (!(m_colourMasks[colour][r] & ~state.mask[r])) continue;
+                openCell = true;
+                break;
+            }
+            if (!openCell) return false;
         }
 
-        return out;
+        for (int r{0}; r < m_size; ++r) {
+            if (state.queens[r]) continue;
+            if (!(~state.mask[r] & m_rowMask)) return false;
+        }
+
+        State_t columnQueens{};
+        State_t freeColumns{};
+        for (int r{0}; r < m_size; ++r) {
+            columnQueens |= state.queens[r];
+            freeColumns |= ~state.mask[r];
+        }
+        freeColumns &= m_rowMask;
+        if ((freeColumns | columnQueens) != m_rowMask) return false;
+
+        return true;
+    }
+
+    bool isSolution(const State& state) const {
+        State_t columnQueens{};
+        for (int r{0}; r < m_size; ++r) {
+            if (!state.queens[r]) return false;
+            columnQueens |= state.queens[r];
+        }
+        return columnQueens == m_rowMask && state.queenColours == m_rowMask;
     }
 
     int size() const { return m_size; }
@@ -193,6 +277,13 @@ class BacktrackSolver {
 };
 
 class DeductionSolver {
+   public:
+    enum class Status {
+        solved,
+        stuck,
+        contradiction,
+    };
+
    private:
     int m_passes{};
 
@@ -421,7 +512,7 @@ class DeductionSolver {
         &blocksColumn,       &regionInRow,   &regionInColumn, &kRegionsInkRows,
         &kRegionsInkColumns, &blockedSquares};
 
-    std::optional<State> deduce(const Context& context, State state) {
+    Status deduce(const Context& context, State& state) {
         bool progress{true};
         while (progress) {
             progress = false;
@@ -432,49 +523,67 @@ class DeductionSolver {
                     break;
                 }
             }
+            if (!context.puzzle.isConsistent(state))
+                return Status::contradiction;
         }
         if (std::popcount(state.queenColours) == context.puzzle.size())
-            return state;
-        std::cout << "DEDUCTION FAILED USING BACKTRACKING\n";
-        context.puzzle.print(std::cout, state);
-        BacktrackSolver bs{};
-        return bs.solve(context.puzzle, state);
+            return Status::solved;
+        return Status::stuck;
     }
 
    public:
     DeductionSolver() = default;
 
-    std::optional<State> solve(const Puzzle& puzzle, State s = State{}) {
-        m_passes = 0;
-        const Puzzle t{puzzle.transpose()};
-        const Context c{puzzle, t};
-        return deduce(c, s);
+    Status solve(const Context& context, State& s) {
+        return deduce(context, s);
     }
     int calls() const { return m_passes; }
 };
 
+class HybridSolver {
+   private:
+    int m_calls{};
+    DeductionSolver ds{};
+
+    std::optional<State> backtrack(const Context& context, State state, int r) {
+        ++m_calls;
+        if (context.puzzle.size() == r) return state;
+        if (!context.puzzle.isConsistent(state)) return std::nullopt;
+        if (state.queens[r]) return backtrack(context, state, r + 1);
+        auto status{ds.solve(context, state)};
+        using enum DeductionSolver::Status;
+        if (status == solved) return state;
+        if (status == contradiction) return std::nullopt;
+        for (int c{0}; c < context.puzzle.size(); ++c) {
+            if (!context.puzzle.canPlace(state, r, c)) continue;
+            State nextState{state};
+            std::optional<State> result{backtrack(
+                context, context.puzzle.place(nextState, r, c), r + 1)};
+            if (result) return result;
+        }
+        return std::nullopt;
+    }
+
+   public:
+    HybridSolver() = default;
+
+    std::optional<State> solve(const Puzzle& puzzle, State s = State{}) {
+        const Puzzle t{puzzle.transpose()};
+        const Context c{puzzle, t};
+        return backtrack(c, s, 0);
+    }
+    int calls() const { return m_calls + ds.calls(); }
+};
+
 struct Tester {
-    void testPuzzle(std::istream& file, auto& solver) {
+    void testPuzzle(std::istream& file, HybridSolver& solver) {
         Puzzle p{file};
-        State_t testMask{};
-        char ch{};
         Timer t{};
         std::optional<State> result = solver.solve(p);
         double time{t.elapsed()};
-        bool correct{result};
-        if (result) {
-            for (int r{0}; r < p.size(); ++r) {
-                testMask = 0;
-                for (int c{0}; c < p.size(); ++c) {
-                    file >> ch;
-                    assert(0 <= ch - '0' && ch - '0' <= 1 &&
-                           "INVALID BIT IN ANSWER");
-                    if (ch - '0') testMask |= Puzzle::column(c);
-                }
-                correct = correct && !(testMask ^ result.value().queens[r]);
-            }
-        }
-        std::cout << "Correct: " << std::boolalpha << correct
+        if (result) p.print(std::cout, result.value());
+        std::cout << "Correct: " << std::boolalpha
+                  << (result ? p.isSolution(result.value()) : false)
                   << " Calls: " << solver.calls() << " Time: " << time << '\n';
     }
 };
@@ -483,8 +592,8 @@ int main(int argc, char const* argv[]) {
     assert(argc > 1 && "NO TEST FILE GIVEN");
     std::ifstream file{argv[1]};
     assert(file && "NO SUCH FILE EXISTS");
-    DeductionSolver ds{};
+    HybridSolver hs{};
     Tester t{};
-    t.testPuzzle(file, ds);
+    t.testPuzzle(file, hs);
     return 0;
 }
