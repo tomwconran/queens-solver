@@ -139,7 +139,7 @@ class Puzzle {
         for (int r{0}; r < m_size; ++r) {
             for (int c{0}; c < m_size; ++c) {
                 if ((state.mask[r] >> c) & 1)
-                    std::cout << (((state.queens[r] >> c) & 1) ? 'Q' : '.');
+                    out << (((state.queens[r] >> c) & 1) ? 'Q' : '.');
                 else
                     out << static_cast<char>(m_region[r][c] + 'A');
             }
@@ -383,10 +383,43 @@ class DeductionSolver {
         return found;
     }
 
+    static bool blockedSquares(const Context& context, State& state) {
+        bool found{false};
+        for (int colour{0}; colour < context.puzzle.size(); ++colour) {
+            if (state.queenColours & Puzzle::column(colour)) continue;
+            auto& colourMask{context.puzzle.colourMask(colour)};
+            std::array<State_t, maxSize> crossMask{};
+            crossMask.fill(~State_t{0});
+            bool empty{true};
+            for (int r{0}; r < context.puzzle.size(); ++r) {
+                State_t tempColourMask{colourMask[r] & ~state.mask[r]};
+                while (tempColourMask) {
+                    empty = false;
+                    int c{std::countr_zero(tempColourMask)};
+                    tempColourMask &= tempColourMask - 1;
+                    State newState{state};
+                    context.puzzle.place(newState, r, c);
+                    for (int i{0}; i < context.puzzle.size(); ++i) {
+                        crossMask[i] &= newState.mask[i];
+                    }
+                }
+            }
+            if (empty) continue;
+            for (int r{0}; r < context.puzzle.size(); ++r) {
+                crossMask[r] &=
+                    ~colourMask[r] & ~state.mask[r] & context.puzzle.rowMask();
+                if (!crossMask[r]) continue;
+                found = true;
+                context.puzzle.crossRow(state, r, crossMask[r]);
+            }
+        }
+        return found;
+    }
+
     static constexpr std::array rules{
-        &singleSquare,   &singleRow,       &singleColumn,
-        &blocksRow,      &blocksColumn,    &regionInRow,
-        &regionInColumn, &kRegionsInkRows, &kRegionsInkColumns};
+        &singleSquare,       &singleRow,     &singleColumn,   &blocksRow,
+        &blocksColumn,       &regionInRow,   &regionInColumn, &kRegionsInkRows,
+        &kRegionsInkColumns, &blockedSquares};
 
     std::optional<State> deduce(const Context& context, State state) {
         bool progress{true};
