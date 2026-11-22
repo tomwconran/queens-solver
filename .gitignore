@@ -1,0 +1,17 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+
+# Compiled binaries
+/queens
+*.o
+*.out
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# Editors
+.vscode/
+.idea/
