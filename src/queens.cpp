@@ -5,6 +5,8 @@
 #include <istream>
 #include <vector>
 
+#include "timer.h"
+
 using Board_t = std::uint16_t;
 
 class Board {
@@ -93,11 +95,38 @@ class Board {
 
         return out;
     }
+
+    int size() const { return m_size; }
 };
 
 std::ostream& operator<<(std::ostream& out, const Board& board) {
     return board.print(out);
 }
+
+class BacktrackSolver {
+   private:
+    int m_calls{};
+
+    bool backtrack(const Board& board, int r) {
+        ++m_calls;
+        if (board.size() == r) return true;
+        for (int c{0}; c < board.size(); ++c) {
+            if (!board.canPlace(r, c)) continue;
+            if (backtrack(Board{board}.place(r, c), r + 1)) return true;
+        }
+        return false;
+    }
+
+   public:
+    BacktrackSolver() = default;
+
+    void solve(const Board& board) {
+        m_calls = 0;
+        Timer t{};
+        std::cout << "Success: " << std::boolalpha << backtrack(board, 0)
+                  << " Calls: " << m_calls << " Time: " << t.elapsed() << '\n';
+    }
+};
 
 int main(int argc, char const* argv[]) {
     assert(argc > 1 && "NO TEST FILE GIVEN");
@@ -105,5 +134,7 @@ int main(int argc, char const* argv[]) {
     assert(file && "NO SUCH FILE EXISTS");
     Board b{file};
     std::cout << b << '\n';
+    BacktrackSolver bs{};
+    bs.solve(b);
     return 0;
 }
